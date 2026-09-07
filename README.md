@@ -4,9 +4,9 @@ This project contains a reactive [Marimo](https://marimo.io/) notebook for a
 controlled scientific comparison of linear and nonlinear near-field phase
 retrieval. It follows the pure-phase convention
 
-\[
+$$
 T = \exp(i\phi), \qquad \phi \leq 0,
-\]
+$$
 
 and the four Fresnel numbers of the polystyrene-bead data used by Huhn et al.
 
