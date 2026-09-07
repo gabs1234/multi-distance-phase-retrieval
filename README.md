@@ -5,9 +5,8 @@ projected gradient descent, and nonlinear Tikhonov phase retrieval using DeepInv
 
 ## Run
 
-Requires Python 3.12+ and uv. Set the DeepInv checkout path in
-`pyproject.toml` to your local checkout; the current configuration uses a
-development version with Fresnel propagation support.
+Requires Python 3.12+ and uv. DeepInv is pinned to a public development
+commit with Fresnel propagation support.
 
 ```bash
 uv sync
