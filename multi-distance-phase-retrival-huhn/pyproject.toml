@@ -1,0 +1,25 @@
+[project]
+name = "multi-distance-phase-retrival-huhn"
+version = "0.1.0"
+description = "Controlled DeepInv comparison of multi-distance Fresnel phase retrieval"
+readme = "README.md"
+authors = [
+    { name = "Gabriel Lefloch", email = "gabslefloch@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "deepinv",
+    "marimo>=0.24.0",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.2",
+]
+
+[project.scripts]
+multi-distance-phase-retrival-huhn = "multi_distance_phase_retrival_huhn:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+deepinv = { git = "https://github.com/sebaseb98/deepinv.git", rev = "41735386d0aa0792a2ddcb50bfed7b7c35dc3b6f" }
