@@ -164,7 +164,7 @@ def plot_hologram_line_cuts(
             profile_axis.tick_params(labelbottom=row == len(order) - 1)
             profile_axis.set_ylabel("Intensity I / I₀")
         coordinate = "x" if orientation == "horizontal" else "y"
-        axes[-1, 1].set_xlabel(f"{coordinate} relative to crop center [µm]")
+        axes[-1, 1].set_xlabel(f"{coordinate} relative to selected field center [µm]")
         line_name = "row" if orientation == "horizontal" else "column"
         selection = f"{line_name} {index}" if stop - start == 1 else f"{line_name}s {start}–{stop - 1} averaged"
         figure.suptitle("Registered fringes evolve as effective distance grows", x=0.06, ha="left", fontsize=14)

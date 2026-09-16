@@ -1,0 +1,22 @@
+{
+  "material": "polystyrene, C8H8",
+  "energy_eV": 8000,
+  "density_g_cm3": 1.05,
+  "molar_mass_g_mol": 104.152,
+  "interpolation": "linear interpolation of atomic f1 and f2 in photon energy",
+  "source": "CXRO / LBNL Henke atomic scattering factors, accessed 2026-09-15",
+  "elements": {
+    "C": {
+      "count": 8,
+      "url": "https://henke.lbl.gov/optical_constants/sf/c.nff",
+      "columns": ["energy_eV", "f1", "f2"],
+      "rows": [[7920.68, 6.01975, 0.00994583], [8048.79, 6.01917, 0.00959775]]
+    },
+    "H": {
+      "count": 8,
+      "url": "https://henke.lbl.gov/optical_constants/sf/h.nff",
+      "columns": ["energy_eV", "f1", "f2"],
+      "rows": [[7920.68, 0.999984, 0.00000115443], [8048.79, 0.999984, 0.00000111076]]
+    }
+  }
+}

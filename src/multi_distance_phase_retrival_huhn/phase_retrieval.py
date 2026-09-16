@@ -467,6 +467,7 @@ def constrained_ctf_reconstruct(
     tolerance: float = 1e-3,
     acceleration: bool = True,
     restart_eta: float = 0.999,
+    diagnostics: dict | None = None,
 ) -> Tensor:
     """Constrained CTF reconstruction by accelerated scaled ADMM.
 
@@ -475,9 +476,15 @@ def constrained_ctf_reconstruct(
     CTF inverse.  The default Nesterov acceleration with residual restart is
     the fast-ADMM variant used for paper Eq. 8; setting ``acceleration=False``
     recovers ordinary scaled ADMM.
+
+    If supplied, ``diagnostics`` is filled with the iteration count, final
+    relative primal/dual residuals, and whether the tolerance was reached.
     """
 
     if not nonpositive and support is None:
+        if diagnostics is not None:
+            diagnostics.update(iterations=0, primal_residual=0.0,
+                               dual_residual=0.0, converged=True)
         return ctf_reconstruct(measurements, propagators, alpha=alpha)
     if rho <= 0:
         raise ValueError("rho must be positive")
@@ -502,6 +509,8 @@ def constrained_ctf_reconstruct(
     acceleration_factor = 1.0
     restart_measure: Tensor | None = None
     epsilon = torch.finfo(stack.dtype).eps
+    iteration = -1
+    primal_residual = dual_residual = float("inf")
 
     for iteration in range(max_iter):
         rhs = data_numerator + rho * torch.fft.fft2(
@@ -565,6 +574,13 @@ def constrained_ctf_reconstruct(
             restart_measure = restart_measure / restart_eta
             accelerated_auxiliary = accepted_auxiliary
             accelerated_dual = accepted_dual
+    if diagnostics is not None:
+        diagnostics.update(
+            iterations=iteration + 1,
+            primal_residual=float(primal_residual),
+            dual_residual=float(dual_residual),
+            converged=max(float(primal_residual), float(dual_residual)) <= tolerance,
+        )
     return accepted_auxiliary
 
 
@@ -791,6 +807,11 @@ def alternating_projections(
     back-propagated waves are averaged, as in Hagemann et al. (2018), before
     the pure-phase, sign, and optional support constraints are imposed.
 
+    Phase increments are lifted onto the preceding iterate's branch before
+    projection. Taking the principal argument of the new wave directly would
+    wrap a phase below -pi to a positive value and incorrectly clamp it to zero.
+    This is temporal branch tracking, not spatial phase unwrapping.
+
     The recorded objective is the common *intensity* least-squares diagnostic;
     AP itself is an amplitude-projection method and does not minimize that
     objective by gradient descent.
@@ -806,6 +827,7 @@ def alternating_projections(
         initial_phase.detach().clone(), nonpositive=nonpositive, support=support
     )
     wave = torch.exp(1j * phase)
+    amplitudes = stack.clamp_min(0.0).sqrt()
 
     def diagnostic(current_phase: Tensor) -> tuple[float, float]:
         predictions = simulate_intensities(current_phase, propagators)
@@ -825,15 +847,13 @@ def alternating_projections(
 
     for _ in range(max_iter):
         previous_phase = phase
-        backpropagated = []
-        for measurement, propagator in zip(stack, propagators, strict=True):
+        averaged_wave = torch.zeros_like(wave)
+        for amplitude, propagator in zip(amplitudes, propagators, strict=True):
             detector_field = propagator.A(wave)
-            detector_phase = detector_field / detector_field.abs().clamp_min(epsilon)
-            projected_field = measurement.clamp_min(0.0).sqrt() * detector_phase
-            backpropagated.append(propagator.A_adjoint(projected_field))
+            projected_field = amplitude * detector_field / detector_field.abs().clamp_min(epsilon)
+            averaged_wave += propagator.A_adjoint(projected_field) / len(propagators)
         calls += 2 * len(propagators)
-        averaged_wave = torch.stack(backpropagated).mean(dim=0)
-        phase = torch.angle(averaged_wave)
+        phase = phase + torch.angle(averaged_wave * wave.conj())
         phase = project_phase(phase, nonpositive=nonpositive, support=support)
         wave = torch.exp(1j * phase)
         objective, relative_residual = diagnostic(phase)

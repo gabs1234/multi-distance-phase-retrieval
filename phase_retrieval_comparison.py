@@ -35,6 +35,19 @@ def _():
         support_referenced_phase_nrmse,
     )
 
+    from multi_distance_phase_retrival_huhn.comparison_plots import (
+        GROUPS, nonlinear_phase_limits, phase_comparison_figure,
+    )
+    from multi_distance_phase_retrival_huhn.notebook_plots import (
+        image_grid, full_field_reconstruction_figure, tensor_image,
+    )
+    from multi_distance_phase_retrival_huhn.experiment_io import (
+        DEFAULT_CACHE, DEFAULT_DATASET, load_results,
+    )
+    from multi_distance_phase_retrival_huhn.direct_methods import (
+        tie_reconstruct, homogeneous_ctf_ict, polystyrene_8kev, predict_intensity,
+    )
+
     COLORS = ("#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9")
     WAVELENGTH = 1.5498e-10
     PIXEL_SIZE = 196e-9
@@ -64,6 +77,19 @@ def _():
         }
     )
     return (
+        GROUPS,
+        nonlinear_phase_limits,
+        phase_comparison_figure,
+        image_grid,
+        full_field_reconstruction_figure,
+        tensor_image,
+        DEFAULT_CACHE,
+        DEFAULT_DATASET,
+        load_results,
+        tie_reconstruct,
+        homogeneous_ctf_ict,
+        polystyrene_8kev,
+        predict_intensity,
         COLORS,
         DEFAULT_FRESNEL_NUMBERS,
         DEVICE,
@@ -74,6 +100,7 @@ def _():
         NOTEBOOK_SOURCE,
         PIXEL_SIZE,
         Path,
+        Rectangle,
         perf_counter,
         WAVELENGTH,
         alternating_projections,
@@ -126,14 +153,145 @@ def _(DEVICE, dinv, mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Forward model and notation
+
+    ### From complex transmission to a fixed material ratio
+
+    In the paper's notation, the two refractive-index components are
+    $\delta$ (phase) and $\beta$ (absorption):
+    $n=1-\delta+i\beta$. The symbol $\mu$ denotes **projected absorption**,
+    not the phase component of the refractive index.
+    With $k=2\pi/\lambda$, the transmission relative to vacuum is
+
+    $$
+    T(x)=\exp\!\left[ik\int(n(x,z)-1)\,dz\right]
+        =\exp\!\left[-k\int\beta(x,z)\,dz
+                     -ik\int\delta(x,z)\,dz\right]
+        =e^{i\phi(x)-\mu(x)},
+    $$
+    $$
+    \phi(x)=-k\int\delta(x,z)\,dz,\qquad
+    \mu(x)=k\int\beta(x,z)\,dz.
+    $$
+
+    Thus positive absorption gives $|T|=e^{-\mu}\leq1$.
+    This is the attenuating transmission convention behind Eq. (1).
+
+    The **single-material constraint** assumes a known, spatially constant
+    ratio $r=\beta/\delta$ at the acquisition energy. Substitution eliminates
+    one unknown image:
+
+    $$
+    \beta(x,z)=r\,\delta(x,z)
+    \quad\Longrightarrow\quad
+    \mu(x)=kr\int\delta(x,z)\,dz=-r\,\phi(x)
+    \quad\Longrightarrow\quad
+    T(x)=e^{(i+r)\phi(x)}.
+    $$
+
+    Once $\phi$ is reconstructed, $\mu=-r\phi$ follows from the assumed
+    ratio; it is not fitted independently. If instead we define the
+    **signed projected ratio** $c=\mu/\phi$, the same elimination reads
+
+    $$
+    \mu=c\phi,\qquad T=e^{(i-c)\phi},\qquad c=-r.
+    $$
+
+    **Sign convention in the source.** Eq. (3) in the supplied Markdown,
+    also reproduced in the
+    [arXiv text, section 2](https://arxiv.org/html/2205.01099v2#S2),
+    identifies $\mu/\phi$ with $+\beta/\delta$ and then uses
+    $e^{(i-c_{\beta/\delta})\phi}$. With its stated definitions
+    $\phi=-k\int\delta\,dz$ and $\mu=k\int\beta\,dz$, those ratios have
+    opposite signs. The algebra above keeps the positive material ratio
+    $r=\beta/\delta$ separate from the signed ratio $c=\mu/\phi$.
+    Both conventions reduce to $T=e^{i\phi}$ at zero absorption.
+
+    ### What this notebook actually optimizes
+
+    Every reconstruction below estimates **one real phase image** and fixes
+    $\mu=0$: the nonlinear transmission is implemented as
+    `torch.exp(1j * phase)`. Neither a nonzero material ratio nor an independent
+    absorption image is currently fitted. The CTF baseline is also pure-phase,
+    and AP resets the object transmission to unit amplitude.
+
+    In this notebook, **unconstrained** means that phase sign and support
+    constraints are disabled; the pure-phase assumption still applies.
+    Nonlinear reconstruction removes the weak-object linearization, but does
+    not add absorption as a second unknown.
+
+    An independent phase-and-absorption reconstruction would instead optimize
+    two real images, for example
+
+    $$
+    (\phi_\star,\mu_\star)\in
+    \underset{\phi,\ \mu\geq0}{\operatorname{argmin}}
+    \left\{
+        \frac12\sum_{j=1}^{J}
+            \left\||P_j e^{i\phi-\mu}|^2-I_j\right\|_2^2
+        +R_\phi(\phi)+R_\mu(\mu)
+    \right\},
+    $$
+
+    where $R_\phi$ and $R_\mu$ are chosen regularizers and no proportionality
+    between $\phi$ and $\mu$ is imposed. This is a possible extension,
+    **not an implemented run**. The unknowns would be the projected
+    quantities, rather than separate three-dimensional $\delta$ and $\beta$.
+
+    ### Pure-phase forward model used below
+
+    We use the **pure-phase** case of Huhn et al. (2022), Eq. (1):
+    absorption is zero ($c_{\beta/\delta}=0$), and the unknown $\phi$ is in radians.
+    For normalized intensity $I_j$ at distance $j$,
+
+    $$
+    I_j \approx N_j(\phi):=\left|P_j e^{i\phi}\right|^2,\qquad
+    P_j u=\mathcal F^{-1}\!\left[
+        e^{-i|\xi|^2/(4\pi F_j)}\,\mathcal F u
+    \right],\qquad F_j=\frac{\Delta x^2}{\lambda z_j}.
+    $$
+
+    Here $J$ is the number of holograms, $\xi$ is angular spatial frequency
+    in rad/pixel, and $\mathcal F$ is the orthonormal discrete Fourier
+    transform used in the code. Norms below sum over image pixels.
+    $P_j^*$ denotes adjoint (backward) Fresnel propagation.
+
+    The constrained runs use the feasible set and pointwise projection
+    from the pure-phase setting of Eq. (6):
+
+    $$
+    A=\{\phi:\phi(x)\leq 0,\ \phi(x)=0\text{ for }x\notin\Omega\},
+    \qquad
+    [\Pi_A(v)](x)=
+    \begin{cases}
+    \min(v(x),0),&x\in\Omega,\\
+    0,&x\notin\Omega.
+    \end{cases}
+    $$
+
+    For synthetic data, $\Omega$ is the known support; for measured data,
+    it is the entire image, so only the sign constraint applies.
+    In unconstrained runs, $A=\mathbb R^{H\times W}$ and $\Pi_A(v)=v$.
+    The equations below state the reconstruction targets and updates;
+    iterative results are finite-iteration approximations.
+    """)
+    return
+
+
 @app.cell
 def _(
     COLORS,
+    Rectangle,
     ctf_transfer_functions,
+    mo,
     np,
     plt,
     relative_data_residual,
     support_referenced_phase_nrmse,
+    tensor_image,
     torch,
 ):
     def centered_crop(images, size):
@@ -164,93 +322,6 @@ def _(
         phase = -float(max_phase) * thickness / thickness.amax().clamp_min(1e-12)
         phase = torch.where(support, phase, torch.zeros_like(phase))
         return phase[None, None], support
-
-    def tensor_image(value):
-        if isinstance(value, torch.Tensor):
-            value = value.detach().squeeze().cpu().numpy()
-        return np.asarray(value)
-
-    def image_grid(
-        images,
-        labels,
-        *,
-        colorbar_label,
-        cmap="magma",
-        zero_ceiling=False,
-        context_image=None,
-        crop_bounds=None,
-    ):
-        arrays = [tensor_image(image) for image in images]
-        finite = np.concatenate([array[np.isfinite(array)].ravel() for array in arrays])
-        vmin, vmax = np.quantile(finite, [0.01, 0.99])
-        if zero_ceiling and vmax <= max(1e-8, 0.03 * abs(vmin)):
-            vmax = 0.0
-        if np.isclose(vmin, vmax):
-            vmin, vmax = float(vmin) - 1.0, float(vmax) + 1.0
-        _context = None if context_image is None else tensor_image(context_image)
-        if _context is not None:
-            if _context.ndim != 2 or not np.isfinite(_context).all():
-                raise ValueError("context_image must be a finite 2D image")
-            if crop_bounds is None or len(crop_bounds) != 4:
-                raise ValueError("crop_bounds=(top, left, height, width) is required")
-            _top, _left, _height, _width = map(int, crop_bounds)
-            if (
-                _top < 0
-                or _left < 0
-                or _height != arrays[0].shape[-2]
-                or _width != arrays[0].shape[-1]
-                or _top + _height > _context.shape[0]
-                or _left + _width > _context.shape[1]
-            ):
-                raise ValueError(
-                    "crop_bounds do not locate the reconstruction in context_image"
-                )
-            _context_vmin, _context_vmax = np.quantile(_context, [0.01, 0.99])
-            if np.isclose(_context_vmin, _context_vmax):
-                _context_vmin, _context_vmax = (
-                    float(_context_vmin) - 0.01,
-                    float(_context_vmax) + 0.01,
-                )
-        figure, axes = plt.subplots(
-            1, len(arrays), figsize=(3.15 * len(arrays), 3.0), squeeze=False
-        )
-        last_image = None
-        for axis, array, label in zip(axes[0], arrays, labels, strict=True):
-            last_image = axis.imshow(array, cmap=cmap, vmin=vmin, vmax=vmax)
-            axis.set_title(label, fontsize=10)
-            axis.set_axis_off()
-            if _context is not None:
-                _inset = axis.inset_axes([0.02, 0.02, 0.29, 0.29])
-                _inset.imshow(
-                    _context,
-                    cmap="gray",
-                    vmin=_context_vmin,
-                    vmax=_context_vmax,
-                    origin="upper",
-                    interpolation="nearest",
-                )
-                _inset.add_patch(
-                    Rectangle(
-                        (_left - 0.5, _top - 0.5),
-                        _width,
-                        _height,
-                        fill=False,
-                        edgecolor="#D55E00",
-                        linewidth=1.6,
-                    )
-                )
-                _inset.set_title("full FOV", fontsize=7, color="#D55E00", pad=1)
-                _inset.set_xticks([])
-                _inset.set_yticks([])
-                for _spine in _inset.spines.values():
-                    _spine.set_visible(True)
-                    _spine.set_color("#D55E00")
-                    _spine.set_linewidth(1.0)
-        figure.colorbar(
-            last_image, ax=list(axes[0]), shrink=0.76, pad=0.018, label=colorbar_label
-        )
-        figure.subplots_adjust(left=0.01, right=0.96, bottom=0.02, top=0.88, wspace=0.05)
-        return figure
 
     def curve_figure(curves, *, xlabel, ylabel, log_y=True):
         figure, axis = plt.subplots(figsize=(6.4, 3.35))
@@ -286,58 +357,26 @@ def _(
         figure.tight_layout()
         return figure
 
-    def full_field_reconstruction_figure(phase, detail_size):
-        array = tensor_image(phase)
-        height, width = array.shape
-        detail_height = min(int(detail_size), height)
-        detail_width = min(int(detail_size), width)
-        top = (height - detail_height) // 2
-        left = (width - detail_width) // 2
-        finite = array[np.isfinite(array)]
-        vmin, vmax = np.quantile(finite, [0.01, 0.99])
-        if vmax <= max(1e-8, 0.03 * abs(vmin)):
-            vmax = 0.0
-        if np.isclose(vmin, vmax):
-            vmin, vmax = float(vmin) - 1.0, float(vmax) + 1.0
-        figure, axis = plt.subplots(figsize=(7.2, 6.4))
-        phase_image = axis.imshow(array, cmap="magma", vmin=vmin, vmax=vmax)
-        axis.add_patch(
-            Rectangle(
-                (left - 0.5, top - 0.5),
-                detail_width,
-                detail_height,
-                fill=False,
-                edgecolor="#D55E00",
-                linewidth=1.2,
-            )
+    def phase_detail_controls(shape):
+        height, width = shape
+        sizes = [size for size in (64, 128, 256, 512) if size <= min(shape)]
+        if not sizes:
+            sizes = [min(shape)]
+        default_size = 128 if 128 in sizes else sizes[0]
+        detail_size = mo.ui.dropdown(
+            options={f"{size} × {size}": size for size in sizes},
+            value=f"{default_size} × {default_size}",
+            label="close-up size",
         )
-        axis.set_title(
-            f"Native {height} × {width} phase · center detail inset", fontsize=12
+        detail_row = mo.ui.slider(
+            start=0, stop=height - 1, value=height // 2,
+            step=1, show_value=True, label="close-up center row",
         )
-        axis.set_axis_off()
-        inset = axis.inset_axes([0.62, 0.03, 0.36, 0.36])
-        inset.imshow(
-            array[top : top + detail_height, left : left + detail_width],
-            cmap="magma",
-            vmin=vmin,
-            vmax=vmax,
-            interpolation="nearest",
+        detail_column = mo.ui.slider(
+            start=0, stop=width - 1, value=width // 2,
+            step=1, show_value=True, label="close-up center column",
         )
-        inset.set_title(
-            f"center {detail_height} × {detail_width}",
-            fontsize=8,
-            color="#D55E00",
-            pad=2,
-        )
-        inset.set_xticks([])
-        inset.set_yticks([])
-        for spine in inset.spines.values():
-            spine.set_visible(True)
-            spine.set_color("#D55E00")
-            spine.set_linewidth(1.0)
-        figure.colorbar(phase_image, ax=axis, shrink=0.78, pad=0.018, label="phase [rad]")
-        figure.subplots_adjust(left=0.02, right=0.93, bottom=0.03, top=0.91)
-        return figure
+        return detail_size, detail_row, detail_column
 
     def radial_average(radius, values, bins=72):
         radial = tensor_image(radius).ravel()
@@ -411,14 +450,60 @@ def _(
         centered_crop,
         ctf_linear_residual,
         curve_figure,
-        full_field_reconstruction_figure,
-        image_grid,
         make_bead_phantom,
         markdown_table,
+        phase_detail_controls,
         phase_nrmse,
         radial_average,
         result_row,
     )
+
+
+@app.cell(hide_code=True)
+def _(DEFAULT_CACHE, GROUPS, mo):
+    _imported = DEFAULT_CACHE.parent / "presentation"
+    saved_cache_control = mo.ui.text(
+        value=str(_imported if _imported.exists() else DEFAULT_CACHE),
+        label="converged results directory", full_width=True,
+    )
+    saved_group_control = mo.ui.dropdown(
+        options={title.replace(" · tight ROI", ""): i for i, (_, title, _) in enumerate(GROUPS)},
+        value=GROUPS[1][1].replace(" · tight ROI", ""), label="comparison",
+    )
+    saved_run_control = mo.ui.run_button(label="Load converged measured-data results")
+    mo.vstack([
+        mo.md("## Converged results used in the presentation"),
+        mo.md("Load saved native-field results to inspect the same full views and tight sphere ROI "
+              "as the slides. This does not rerun the solvers. Every nonlinear panel uses a "
+              "single phase scale computed from all full-field estimates; CTF has its own scale. "
+              "The interactive experiments below remain short, finite-iteration demonstrations."),
+        saved_cache_control, mo.hstack([saved_group_control, saved_run_control]),
+    ])
+    return saved_cache_control, saved_group_control, saved_run_control
+
+
+@app.cell
+def _(DEFAULT_DATASET, load_results, mo, saved_cache_control, saved_run_control):
+    mo.stop(not saved_run_control.value)
+    saved_maps, saved_metrics, saved_sources = load_results(saved_cache_control.value, DEFAULT_DATASET)
+    return saved_maps, saved_metrics, saved_sources
+
+
+@app.cell(hide_code=True)
+def _(GROUPS, mo, nonlinear_phase_limits, phase_comparison_figure,
+      saved_group_control, saved_maps, saved_metrics):
+    _, _title, _methods = GROUPS[saved_group_control.value]
+    _limits = nonlinear_phase_limits(saved_maps)
+    _full, _ = phase_comparison_figure(saved_maps, saved_metrics, _methods,
+                                      _title.replace(" · tight ROI", " · full field"), _limits)
+    _roi, _ = phase_comparison_figure(saved_maps, saved_metrics, _methods,
+                                     _title, _limits, roi=(583, 870, 192))
+    mo.vstack([_full, _roi, mo.md(
+        "Numerical stopping: projected-gradient ratio ≤ 10⁻³ for PGD/NLTikh; "
+        "last 20 relative phase updates ≤ 10⁻⁵ for AP. Both also require the "
+        "100-step objective change divided by E(0) ≤ 10⁻⁴. The data have no phase ground truth."
+    )])
+    return
 
 
 @app.cell(hide_code=True)
@@ -444,7 +529,15 @@ def _(
     size_control = mo.ui.dropdown(
         options={"96 × 96 (fast)": 96, "128 × 128": 128, "192 × 192": 192},
         value="128 × 128",
-        label="comparison crop size",
+        label="ROI / synthetic image size",
+    )
+    field_control = mo.ui.dropdown(
+        options={
+            "Central ROI": "roi",
+            "Full projections": "full",
+        },
+        value="Central ROI",
+        label="measured reconstruction field",
     )
     phase_control = mo.ui.slider(
         start=0.05, stop=1.0, step=0.05, value=0.45, label="synthetic max |phase| [rad]"
@@ -486,11 +579,18 @@ def _(
     mo.vstack(
         [
             mo.md("## Experiment controls"),
-            mo.hstack([source_control, size_control, iteration_control], widths="equal"),
-            mo.hstack([phase_control, noise_control, step_control], widths="equal"),
+            mo.hstack([source_control, field_control, size_control], widths="equal"),
+            mo.hstack([iteration_control, step_control], widths="equal"),
+            mo.hstack([phase_control, noise_control], widths="equal"),
             mo.hstack([ctf_alpha_control, seed_control, run_control], widths="equal"),
             mo.callout(
-                "The button gates the expensive FFT iterations. Change controls, then run again.",
+                "All five stages use the same reconstruction field. For measured data, "
+                "choose a central ROI or all 2048 × 1920 pixels at native sampling. "
+                "Full projections use about 240× as many pixels as the default ROI, "
+                "so need more time and memory. A separate close-up viewer lets you "
+                "inspect the reconstructed phase without rerunning the solvers. "
+                "For synthetic data, the size sets the simulated field. "
+                "Change reconstruction settings, then press Run all five stages.",
                 kind="info",
             ),
             mo.md("### Optional measured-data full-field reconstruction"),
@@ -514,6 +614,7 @@ def _(
     )
     return (
         ctf_alpha_control,
+        field_control,
         full_field_ctf_control,
         full_field_iteration_control,
         full_field_run_control,
@@ -532,6 +633,7 @@ def _(
 def _(
     NOTEBOOK_AUTORUN,
     ctf_alpha_control,
+    field_control,
     iteration_control,
     mo,
     noise_control,
@@ -548,6 +650,7 @@ def _(
     )
     experiment_settings = {
         "source": source_control.value,
+        "field": field_control.value,
         "size": int(size_control.value),
         "max_phase": float(phase_control.value),
         "noise": float(noise_control.value),
@@ -612,43 +715,54 @@ def _(
             _full_stack = torch.from_numpy(_archive["holograms"]).float()
             fresnel_numbers = tuple(float(value) for value in _archive["fresnelNumbers"])
         _full_height, _full_width = _full_stack.shape[-2:]
-        crop_bounds = (
-            (_full_height - _size) // 2,
-            (_full_width - _size) // 2,
-            _size,
-            _size,
-        )
         full_measurements = _full_stack
-        _crop = centered_crop(_full_stack, _size)
-        measurements = _crop[:, None, None].to(DEVICE)
+        if experiment_settings["field"] == "full":
+            crop_bounds = None
+            _selected_stack = _full_stack
+            _selection_note = (
+                f"All five stages reconstruct the full {_full_height} × {_full_width} "
+                "field at native sampling. The close-up viewer crops only the "
+                "displayed phase after reconstruction. "
+            )
+        else:
+            crop_bounds = (
+                (_full_height - _size) // 2,
+                (_full_width - _size) // 2,
+                _size,
+                _size,
+            )
+            _selected_stack = centered_crop(_full_stack, _size)
+            _selection_note = (
+                f"All five stages reconstruct a central {_size} × {_size} ROI. "
+                "Each phase panel includes a full-field inset with this ROI outlined; "
+                "phase outside the outline has not been reconstructed. "
+                "Cropping plus FFT-periodic boundaries can create edge-model mismatch. "
+            )
+        measurements = _selected_stack[:, None, None].to(DEVICE)
         clean_measurements = None
         phase_truth = None
         support_mask = None
         propagators = make_fresnel_propagators(
-            (_size, _size),
+            tuple(measurements.shape[-2:]),
             fresnel_numbers,
             wavelength=WAVELENGTH,
             pixel_size=PIXEL_SIZE,
             device=DEVICE,
         )
         source_note = (
-            "Measured holograms from the local holograms_beads_updated.npz, center-cropped "
+            _selection_note
+            + "Measured holograms come from the local holograms_beads_updated.npz "
             "with their stored intensity values preserved. The accompanying demo documents "
             "dark/flat-field correction, registration, and common magnification; the archive "
             "does not contain the raw calibration fields. No additional correction or "
             "per-crop mean normalization is applied. The sample fills the field of view, "
-            "so no support mask is asserted. Every reconstruction panel below includes "
-            "a first-plane full-FOV inset with this crop outlined; phase outside the "
-            "outline has not been reconstructed. "
-            "Cropping plus FFT-periodic boundaries can create edge-model mismatch."
+            "so no support mask is asserted."
         )
 
     measurements_single = measurements[:1]
     propagators_single = propagators[:1]
     fresnel_numbers_single = fresnel_numbers[:1]
-    initial_phase = torch.zeros(
-        1, 1, _size, _size, dtype=measurements.dtype, device=DEVICE
-    )
+    initial_phase = torch.zeros_like(measurements[0])
     constraint_text = "nonpositive phase + loose known support" if support_mask is not None else "nonpositive phase only"
     return (
         constraint_text,
@@ -682,7 +796,7 @@ def _(mo, source_note):
 
 
 @app.cell(hide_code=True)
-def _(measurements, mo):
+def _(mo):
     cut_orientation = mo.ui.dropdown(
         options=["horizontal", "vertical"], value="horizontal", label="cut direction"
     )
@@ -690,13 +804,21 @@ def _(measurements, mo):
         options={"1 pixel": 1, "3 pixels": 3, "5 pixels": 5, "9 pixels": 9},
         value="1 pixel", label="averaging band",
     )
+    return cut_band, cut_orientation
+
+
+@app.cell(hide_code=True)
+def _(cut_band, cut_orientation, measurements, mo):
+    _cross_size = measurements.shape[
+        -2 if cut_orientation.value == "horizontal" else -1
+    ]
     cut_position = mo.ui.slider(
-        start=0, stop=min(measurements.shape[-2:]) - 1,
-        value=measurements.shape[-2] // 2, step=1, show_value=True,
+        start=0, stop=_cross_size - 1,
+        value=_cross_size // 2, step=1, show_value=True,
         label="row / column index (zero-based)",
     )
     mo.hstack([cut_orientation, cut_position, cut_band], wrap=True)
-    return cut_band, cut_orientation, cut_position
+    return (cut_position,)
 
 
 @app.cell(hide_code=True)
@@ -720,7 +842,7 @@ def _(
         orientation=cut_orientation.value, index=int(cut_position.value),
         band_width=int(cut_band.value),
         context_images=(
-            None if full_measurements is None else full_measurements.numpy()
+            None if crop_bounds is None else full_measurements.numpy()
         ),
         crop_bounds=crop_bounds,
     )
@@ -731,10 +853,11 @@ def _(
             _figure,
             mo.md(rf"""
             For measured data, each left panel is the complete 2048 × 1920 registered
-            hologram. The orange rectangle marks the reconstruction crop, which is enlarged
-            in the inset; the blue marker locates the line cut within that crop. For
-            synthetic data, the left panel is the complete simulated field. A shaded band
-            appears when averaging is enabled.
+            hologram. With **Central ROI**, the orange rectangle marks the reconstruction
+            crop, enlarged in the inset. With **Full projections**, the cut crosses the
+            full measured field. For synthetic data, the left panel is the complete
+            simulated field. The blue marker locates the cut; a shaded band appears
+            when averaging is enabled.
             Profiles use the stored/simulated intensities without offsets, rescaling, or
             smoothing along the cut. Full-field thumbnails and crop insets each share their
             own pooled 1–99% display window; **the profiles are not clipped**. Dotted gray repeats the smallest-z
@@ -751,12 +874,54 @@ def _(
     return
 
 
+@app.cell(hide_code=True)
+def _(experiment_settings, fresnel_numbers, homogeneous_ctf_ict, image_grid,
+      measurements_single, mo, np, polystyrene_8kev, predict_intensity,
+      tensor_image, tie_reconstruct):
+    mo.stop(experiment_settings["source"] != "measured")
+    _observed = tensor_image(measurements_single[0]).astype(np.float64)
+    _number = fresnel_numbers[0]
+    _alpha = experiment_settings["ctf_alpha"]
+    _gamma = polystyrene_8kev()["gamma"]
+    _tie = tie_reconstruct(_observed, _number, alpha=_alpha)
+    _ctf, _ict, _contact = homogeneous_ctf_ict(_observed, _number, gamma=_gamma, alpha=_alpha)
+    _residuals = [float(np.linalg.norm(predict_intensity(_phase, _number, gamma=_ratio) - _observed)
+                       / np.linalg.norm(_observed - 1))
+                  for _phase, _ratio in ((_tie, None), (_ctf, _gamma), (_ict, _gamma))]
+    mo.vstack([
+        mo.md(f"## Direct TIE and matched CTF / ICT on the selected measured field\n\n"
+              f"TIE uses a pure-phase model. The homogeneous CTF and ICT pair both use "
+              f"the tabulated polystyrene ratio γ = {_gamma:.1f} and the same α = {_alpha:g}. "
+              "The remaining five stages retain their pure-phase model. Residuals measure "
+              "agreement with intensities, not phase accuracy."),
+        image_grid([_tie], [f"TIE · intensity residual {_residuals[0]:.4f}"], colorbar_label="phase [rad]"),
+        image_grid([_ctf, _ict], [f"Homogeneous CTF · residual {_residuals[1]:.4f}",
+                                 f"ICT · residual {_residuals[2]:.4f}"], colorbar_label="phase [rad]"),
+    ])
+    return
+
+
 @app.cell
-def _(crop_bounds, full_measurements, image_grid):
-    _context = None if full_measurements is None else full_measurements[0]
+def _(nonlinear_phase_limits, tensor_image, stage2_free, stage2_constrained,
+      stage3_multi, stage4_ap, stage5_warm, stage5_regularized, stage5_full):
+    comparison_nonlinear_limits = nonlinear_phase_limits({
+        "pgd_free": tensor_image(stage2_free.estimate),
+        "pgd_single": tensor_image(stage2_constrained.estimate),
+        "pgd_multi": tensor_image(stage3_multi.estimate),
+        "ap": tensor_image(stage4_ap.estimate),
+        "pgd_warm": tensor_image(stage5_warm.estimate),
+        "pgd_tikh": tensor_image(stage5_regularized.estimate),
+        "nltikh": tensor_image(stage5_full.estimate),
+    })
+    return (comparison_nonlinear_limits,)
+
+
+@app.cell
+def _(crop_bounds, full_measurements, image_grid, comparison_nonlinear_limits):
+    _context = None if crop_bounds is None else full_measurements[0]
 
     def reconstruction_grid(
-        images, labels, *, colorbar_label, cmap="magma", zero_ceiling=False
+        images, labels, *, colorbar_label, cmap="magma", zero_ceiling=False, separate_indices=()
     ):
         return image_grid(
             images,
@@ -764,6 +929,8 @@ def _(crop_bounds, full_measurements, image_grid):
             colorbar_label=colorbar_label,
             cmap=cmap,
             zero_ceiling=zero_ceiling,
+            color_limits=comparison_nonlinear_limits if zero_ceiling else None,
+            separate_indices=separate_indices,
             context_image=_context,
             crop_bounds=crop_bounds,
         )
@@ -871,6 +1038,31 @@ def _(
                 Moore–Penrose cutoff, including the unobservable DC phase mode.
                 """
             ),
+            mo.md(r"""
+                **Phase retrieval — Huhn et al., Eqs. (2) and (4), with
+                $c_{\beta/\delta}=0$.** Define the phase CTF
+                $h_j(\xi)=2\sin(|\xi|^2/(4\pi F_j))$ and the linear prediction
+                $L_j(\phi)=1+\mathcal F^{-1}[h_j\mathcal F\phi]$. Then
+
+                $$
+                \phi_{\mathrm{CTF}}
+                =\underset{\phi\in\mathbb R^{H\times W}}{\operatorname{argmin}}
+                \left\{
+                    \frac12\sum_{j=1}^{J}\|L_j(\phi)-I_j\|_2^2
+                    +\frac12\|\sqrt{\alpha}\,\mathcal F\phi\|_2^2
+                \right\}
+                =\mathcal F^{-1}\!\left[
+                    \frac{\sum_{j=1}^{J}h_j\,\mathcal F(I_j-1)}
+                         {\alpha+\sum_{j=1}^{J}h_j^2}
+                \right].
+                $$
+
+                The four panels use $J=1$ or $4$ and $\alpha=0$ or the
+                selected scalar value. Numerically, the Fourier estimate
+                is set to zero wherever the denominator is at most
+                $10^{-6}$ times its maximum, including DC when $\alpha=0$.
+                The common factor $1/2$ leaves the paper's minimizer unchanged.
+                """),
             _phase_figure,
             mo.md(
                 "The conditioning curve shows why additional distances help: their "
@@ -881,6 +1073,36 @@ def _(
         ]
     )
     return (stage1_results,)
+
+
+@app.cell
+def _(
+    experiment_settings,
+    initial_phase,
+    measurements_single,
+    projected_gradient_descent,
+    propagators_single,
+    support_mask,
+):
+    stage2_free = projected_gradient_descent(
+        measurements_single,
+        propagators_single,
+        initial_phase=initial_phase,
+        step_size=experiment_settings["step"],
+        max_iter=experiment_settings["iterations"],
+        reduction="mean",
+    )
+    stage2_constrained = projected_gradient_descent(
+        measurements_single,
+        propagators_single,
+        initial_phase=initial_phase,
+        nonpositive=True,
+        support=support_mask,
+        step_size=experiment_settings["step"],
+        max_iter=experiment_settings["iterations"],
+        reduction="mean",
+    )
+    return (stage2_constrained, stage2_free,)
 
 
 @app.cell(hide_code=True)
@@ -902,25 +1124,9 @@ def _(
     result_row,
     stage1_results,
     support_mask,
+    stage2_constrained,
+    stage2_free,
 ):
-    stage2_free = projected_gradient_descent(
-        measurements_single,
-        propagators_single,
-        initial_phase=initial_phase,
-        step_size=experiment_settings["step"],
-        max_iter=experiment_settings["iterations"],
-        reduction="mean",
-    )
-    stage2_constrained = projected_gradient_descent(
-        measurements_single,
-        propagators_single,
-        initial_phase=initial_phase,
-        nonpositive=True,
-        support=support_mask,
-        step_size=experiment_settings["step"],
-        max_iter=experiment_settings["iterations"],
-        reduction="mean",
-    )
     _stage2_results = {
         "no constraints": stage2_free,
         constraint_text: stage2_constrained,
@@ -968,15 +1174,44 @@ def _(
 
                 The first contrast replaces only the CTF approximation by the full
                 DeepInv map $\phi \mapsto |P_z e^{i\phi}|^2$: both use one plane,
-                no regularization, and no physical constraints. A nonlinear model
+                no regularization, and no sign/support constraints. A nonlinear model
                 necessarily replaces the closed-form inverse with an iterative solve,
                 so computation is reported rather than silently treated as identical.
                 The second contrast keeps the nonlinear run fixed and changes only the
                 feasible set.
                 """
             ),
+            mo.md(r"""
+                **Phase retrieval — Eq. (7) with $J=1$, $\alpha=0$,
+                solved by Eq. (11).**
+
+                $$
+                \phi_\star\in\underset{\phi\in A}{\operatorname{argmin}}
+                f_1(\phi),\qquad
+                f_1(\phi)=\frac12\|N_1(\phi)-I_1\|_2^2,
+                \qquad
+                \phi_{k+1}=\Pi_A\!\left(\phi_k-\eta\nabla f_1(\phi_k)\right).
+                $$
+
+                With $u_1=P_1e^{i\phi}$, the gradient is the pure-phase
+                specialization of Eqs. (9)–(10), scaled for the code's
+                half-squared loss:
+
+                $$
+                \nabla f_1(\phi)=
+                2\operatorname{Re}\!\left[
+                    \overline{i e^{i\phi}}\,
+                    P_1^*\!\left(u_1\,(|u_1|^2-I_1)\right)
+                \right].
+                $$
+
+                Both nonlinear runs start at $\phi_0=0$ and use the selected
+                fixed step $\eta$. The free run uses the identity projection;
+                the constrained run uses $\Pi_A$ defined above.
+                """),
             reconstruction_grid(
-                _images, _labels, colorbar_label="phase [rad]", zero_ceiling=True
+                _images, _labels, colorbar_label="phase [rad]", zero_ceiling=True,
+                separate_indices=(1 if phase_truth is not None else 0,)
             ),
             curve_figure(
                 _curves,
@@ -987,7 +1222,29 @@ def _(
             mo.md(markdown_table(_rows, METRIC_COLUMNS)),
         ]
     )
-    return (stage2_constrained,)
+    return
+
+
+@app.cell
+def _(
+    experiment_settings,
+    initial_phase,
+    measurements,
+    projected_gradient_descent,
+    propagators,
+    support_mask,
+):
+    stage3_multi = projected_gradient_descent(
+        measurements,
+        propagators,
+        initial_phase=initial_phase,
+        nonpositive=True,
+        support=support_mask,
+        step_size=experiment_settings["step"],
+        max_iter=experiment_settings["iterations"],
+        reduction="mean",
+    )
+    return (stage3_multi,)
 
 
 @app.cell(hide_code=True)
@@ -1009,17 +1266,8 @@ def _(
     result_row,
     stage2_constrained,
     support_mask,
+    stage3_multi,
 ):
-    stage3_multi = projected_gradient_descent(
-        measurements,
-        propagators,
-        initial_phase=initial_phase,
-        nonpositive=True,
-        support=support_mask,
-        step_size=experiment_settings["step"],
-        max_iter=experiment_settings["iterations"],
-        reduction="mean",
-    )
     _stage3_results = {
         "single distance": stage2_constrained,
         "four distances": stage3_multi,
@@ -1063,6 +1311,28 @@ def _(
                 so its gradient scale does not grow mechanically with $J$.
                 """
             ),
+            mo.md(r"""
+                **Phase retrieval — the unregularized Eq. (7), averaged
+                over distances, with the projected update of Eq. (11).**
+
+                $$
+                \phi_\star\in\underset{\phi\in A}{\operatorname{argmin}}
+                f_J(\phi),\qquad
+                f_J(\phi)=\frac{1}{2J}\sum_{j=1}^{J}\|N_j(\phi)-I_j\|_2^2,
+                $$
+                $$
+                \phi_{k+1}=\Pi_A\!\left[
+                    \phi_k-\frac{\eta}{J}\sum_{j=1}^{J}
+                    N_j'[\phi_k]^*(N_j(\phi_k)-I_j)
+                \right],\qquad \phi_0=0.
+                $$
+
+                Here $N_j'[\phi]^*r=
+                2\operatorname{Re}[\overline{i e^{i\phi}}\,P_j^*((P_j e^{i\phi})r)]$.
+                The two runs use $J=1$ and $J=4$ with the same $\eta$ and $A$.
+                The factor $1/(2J)$ rescales the paper's unregularized
+                objective without changing its minimizers.
+                """),
             reconstruction_grid(
                 _images, _labels, colorbar_label="phase [rad]", zero_ceiling=True
             ),
@@ -1075,7 +1345,27 @@ def _(
             mo.md(markdown_table(_rows, METRIC_COLUMNS)),
         ]
     )
-    return (stage3_multi,)
+    return
+
+
+@app.cell
+def _(
+    alternating_projections,
+    experiment_settings,
+    initial_phase,
+    measurements,
+    propagators,
+    support_mask,
+):
+    stage4_ap = alternating_projections(
+        measurements,
+        propagators,
+        initial_phase=initial_phase,
+        nonpositive=True,
+        support=support_mask,
+        max_iter=experiment_settings["iterations"],
+    )
+    return (stage4_ap,)
 
 
 @app.cell(hide_code=True)
@@ -1095,15 +1385,8 @@ def _(
     result_row,
     stage3_multi,
     support_mask,
+    stage4_ap,
 ):
-    stage4_ap = alternating_projections(
-        measurements,
-        propagators,
-        initial_phase=initial_phase,
-        nonpositive=True,
-        support=support_mask,
-        max_iter=experiment_settings["iterations"],
-    )
     _stage4_results = {"DeepInv PGD": stage3_multi, "averaged AP": stage4_ap}
     _rows = [
         result_row(
@@ -1136,6 +1419,32 @@ def _(
                 forward/adjoint propagation budget.
                 """
             ),
+            mo.md(r"""
+                **Phase updates.** PGD uses
+                $\phi_{k+1}=\Pi_A(\phi_k-\eta\nabla f_J(\phi_k))$ from
+                section 3. The averaged AP implementation instead uses
+
+                $$
+                u_{j,k}=P_j e^{i\phi_k},\qquad
+                \widetilde u_{j,k}
+                =\sqrt{\max(I_j,0)}\,
+                    \frac{u_{j,k}}{\max(|u_{j,k}|,\varepsilon)},
+                $$
+                $$
+                \phi_{k+1}=\Pi_A\!\left[
+                    \phi_k+\arg\!\left(e^{-i\phi_k}\frac1J\sum_{j=1}^{J}
+                        P_j^*\widetilde u_{j,k}\right)
+                \right],\qquad \phi_0=0,\quad\varepsilon=10^{-8}.
+                $$
+
+                Each detector amplitude is replaced by the measured amplitude,
+                then the back-propagated waves are averaged. Phase increments are
+                tracked on the previous branch before applying the constraints,
+                avoiding a spurious jump to zero when the phase crosses $-\pi$. These equations describe this
+                notebook's AP comparator; Huhn et al. discuss AP in section 4.1
+                and reference [25], rather than defining it by their NLTikh
+                gradient update.
+                """),
             mo.callout(
                 "AP performs detector-amplitude projections; it is not gradient descent "
                 "on the intensity least-squares objective. Thus this is an algorithmic "
@@ -1167,28 +1476,17 @@ def _(
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
-    METRIC_COLUMNS,
-    angular_frequency_radius,
     constrained_ctf_reconstruct,
-    curve_figure,
     experiment_settings,
     fresnel_numbers,
     huhn_nltikh,
     huhn_regularization_filter,
     initial_phase,
-    markdown_table,
     measurements,
-    mo,
-    phase_truth,
-    plt,
     projected_gradient_descent,
     propagators,
-    radial_average,
-    reconstruction_grid,
-    result_row,
-    stage3_multi,
     support_mask,
 ):
     _planes = len(propagators)
@@ -1244,6 +1542,39 @@ def _(
         max_iter=experiment_settings["iterations"],
         tolerance=1e-3,
     )
+    return (huhn_alpha, huhn_warm_start, stage5_full, stage5_regularized, stage5_warm,)
+
+
+@app.cell(hide_code=True)
+def _(
+    METRIC_COLUMNS,
+    angular_frequency_radius,
+    constrained_ctf_reconstruct,
+    curve_figure,
+    experiment_settings,
+    fresnel_numbers,
+    huhn_nltikh,
+    huhn_regularization_filter,
+    initial_phase,
+    markdown_table,
+    measurements,
+    mo,
+    phase_truth,
+    plt,
+    projected_gradient_descent,
+    propagators,
+    radial_average,
+    reconstruction_grid,
+    result_row,
+    stage3_multi,
+    support_mask,
+    huhn_alpha,
+    huhn_warm_start,
+    stage5_full,
+    stage5_regularized,
+    stage5_warm,
+):
+    _planes = len(propagators)
     _stage5_results = {
         "baseline": stage3_multi,
         "+ constrained CTF init": stage5_warm,
@@ -1310,6 +1641,85 @@ def _(
                 FFT solve.
                 """
             ),
+            mo.md(r"""
+                **Phase retrieval — nonlinear Tikhonov, Eqs. (7) and (11).**
+                With the code's factor $1/2$ applied to both terms,
+
+                $$
+                \phi_\star\in\underset{\phi\in A}{\operatorname{argmin}}
+                E_\alpha(\phi),\qquad
+                E_\alpha(\phi)=
+                    \frac12\sum_{j=1}^{J}\|N_j(\phi)-I_j\|_2^2
+                    +\frac12\|\sqrt{\alpha}\,\mathcal F\phi\|_2^2,
+                $$
+                $$
+                g_k=\nabla E_\alpha(\phi_k)=
+                    \sum_{j=1}^{J}N_j'[\phi_k]^*(N_j(\phi_k)-I_j)
+                    +\mathcal F^{-1}[\alpha\,\mathcal F\phi_k],
+                \qquad
+                \phi_{k+1}=\Pi_A(\phi_k-\tau_k g_k).
+                $$
+
+                The **constrained CTF initialization** solves Eq. (6):
+
+                $$
+                \phi_0\approx\phi_{\mathrm{cCTF}}
+                =\underset{\phi\in A}{\operatorname{argmin}}
+                \left\{
+                    \frac12\sum_{j=1}^{J}\|L_j(\phi)-I_j\|_2^2
+                    +\frac12\|\sqrt{\alpha}\,\mathcal F\phi\|_2^2
+                \right\}.
+                $$
+
+                The code computes this warm start with accelerated ADMM
+                (paper section 3.1, Eq. (8)). The ablation then uses:
+
+                | Run | Initial phase | Nonlinear objective | Step |
+                | --- | --- | --- | --- |
+                | baseline | $0$ | $f_J=E_0/J$ | fixed $\eta$ |
+                | + constrained CTF init | $\phi_{\mathrm{cCTF}}$ | $E_0$ | fixed $\eta/J$ |
+                | + frequency Tikhonov | $\phi_{\mathrm{cCTF}}$ | $E_\alpha$ | fixed $\eta/J$ |
+                | full NLTikh | $\phi_{\mathrm{cCTF}}$ | $E_\alpha$ | adaptive $\tau_k$ |
+
+                All three warm-started runs share the same regularized cCTF
+                initialization. The $\eta/J$ adjustment preserves the baseline
+                data-gradient step when switching from a mean to a summed loss.
+
+                **Frequency weights — Eqs. (5) and (14).** Write
+                $\bar F=J^{-1}\sum_j F_j$, $r_1=\pi\sqrt{2\bar F}$ and
+                $r_{\mathrm{NA}}=\pi D\bar F$, with $D=\min(H,W)$ in this code.
+                The intended three levels are
+
+                $$
+                \alpha(\xi)\approx
+                \begin{cases}
+                10^{-3},&|\xi|<r_1,\\
+                10^{-1},&r_1<|\xi|<r_{\mathrm{NA}},\\
+                2J,&|\xi|>r_{\mathrm{NA}}.
+                \end{cases}
+                $$
+
+                The implementation uses smooth error-function transitions
+                between these levels.
+
+                **Adaptive steps and stopping — Eqs. (12)–(13).** For
+                $s_k=\phi_k-\phi_{k-1}$ and $y_k=g_k-g_{k-1}$,
+
+                $$
+                \tau_k^{\mathrm{BB}}=
+                \begin{cases}
+                \langle s_k,y_k\rangle/\|y_k\|_2^2,&k\text{ odd},\\
+                \|s_k\|_2^2/\langle s_k,y_k\rangle,&k\text{ even},
+                \end{cases}
+                \qquad
+                \frac{\|g_k\|_2}{\|\nabla E_\alpha(0)\|_2}\leq10^{-3}.
+                $$
+
+                Positive, finite BB proposals are clipped to the allowed
+                step range and checked by nonmonotone proximal backtracking.
+                The gradient criterion or the iteration limit ends the run;
+                a failed line search also stops it.
+                """),
             reconstruction_grid(
                 [result.estimate for result in _stage5_results.values()],
                 list(_stage5_results),
@@ -1332,7 +1742,107 @@ def _(
             mo.md(markdown_table(_rows, METRIC_COLUMNS)),
         ]
     )
-    return (stage5_full,)
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    crop_bounds,
+    experiment_settings,
+    measurements,
+    mo,
+    phase_detail_controls,
+    stage1_results,
+    stage2_constrained,
+    stage2_free,
+    stage3_multi,
+    stage4_ap,
+    stage5_full,
+    stage5_regularized,
+    stage5_warm,
+):
+    mo.stop(experiment_settings["source"] != "measured" or crop_bounds is not None)
+    comparison_phases = {
+        **{f"1 · CTF: {label}": phase for label, phase in stage1_results.items()},
+        "2 · Single-distance nonlinear, free": stage2_free.estimate,
+        "2 · Single-distance nonlinear, constrained": stage2_constrained.estimate,
+        "3 · Multi-distance PGD": stage3_multi.estimate,
+        "4 · Averaged AP": stage4_ap.estimate,
+        "5 · PGD + CTF initialization": stage5_warm.estimate,
+        "5 · PGD + frequency Tikhonov": stage5_regularized.estimate,
+        "5 · Full Huhn NLTikh": stage5_full.estimate,
+    }
+    detail_method = mo.ui.dropdown(
+        options=list(comparison_phases),
+        value="5 · Full Huhn NLTikh",
+        label="reconstruction to inspect",
+    )
+    detail_size, detail_row, detail_column = phase_detail_controls(
+        measurements.shape[-2:]
+    )
+    mo.vstack(
+        [
+            mo.md("## Full-field phase close-up"),
+            mo.md(
+                "Select a reconstruction from any section and move the close-up "
+                "using its center row and column (zero-based). "
+                "These controls only change the view; they do not rerun any solver. "
+                "The orange box locates the enlarged region. "
+                "All nonlinear comparisons and close-ups share one full-field phase scale; "
+                "CTF has a separately labeled scale."
+            ),
+            detail_method,
+            mo.hstack([detail_size, detail_row, detail_column], wrap=True),
+        ]
+    )
+    return comparison_phases, detail_column, detail_method, detail_row, detail_size
+
+
+@app.cell(hide_code=True)
+def _(
+    comparison_phases,
+    comparison_nonlinear_limits,
+    detail_column,
+    detail_method,
+    detail_row,
+    detail_size,
+    full_field_reconstruction_figure,
+):
+    full_field_reconstruction_figure(
+        comparison_phases[detail_method.value],
+        int(detail_size.value),
+        color_limits=None if detail_method.value.startswith("1 · CTF") else comparison_nonlinear_limits,
+        center_row=int(detail_row.value),
+        center_column=int(detail_column.value),
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Equation for the optional native-field reconstruction
+
+    The optional run applies the same NLTikh objective (Huhn et al.,
+    Eq. (7)) to all measured pixels and all four distances:
+
+    $$
+    \phi_\star^{\mathrm{native}}\in
+    \underset{\phi\leq0}{\operatorname{argmin}}
+    \left\{
+        \frac12\sum_{j=1}^{4}
+            \left\||P_j^{\mathrm{native}}e^{i\phi}|^2-I_j^{\mathrm{native}}\right\|_2^2
+        +\frac12\|\sqrt{\alpha_{\mathrm{native}}}\,\mathcal F\phi\|_2^2
+    \right\}.
+    $$
+
+    It starts from a constrained CTF reconstruction and uses the adaptive
+    projected steps in section 5, with $\Pi_A(v)=\min(v,0)$.
+    No support mask is supplied. The filter is recomputed on the native
+    grid, using $D=\min(2048,1920)$ and $\alpha_{\mathrm{beyond\text{-}NA}}=8$;
+    the optional controls set the CTF and nonlinear iteration budgets.
+    """)
+    return
 
 
 @app.cell(hide_code=True)
@@ -1415,16 +1925,42 @@ def _(
 
 
 @app.cell(hide_code=True)
+def _(mo, native_field_result, phase_detail_controls):
+    native_detail_size, native_detail_row, native_detail_column = phase_detail_controls(
+        native_field_result.estimate.shape[-2:]
+    )
+    mo.vstack(
+        [
+            mo.md("### Optional NLTikh close-up controls"),
+            mo.md(
+                "Move the close-up within the reconstructed field. "
+                "These display controls do not rerun the optional reconstruction."
+            ),
+            mo.hstack(
+                [native_detail_size, native_detail_row, native_detail_column],
+                wrap=True,
+            ),
+        ]
+    )
+    return native_detail_column, native_detail_row, native_detail_size
+
+
+@app.cell(hide_code=True)
 def _(
     full_field_reconstruction_figure,
+    native_detail_column,
+    native_detail_row,
+    native_detail_size,
     native_field_ctf_iterations,
     native_field_result,
     native_field_total_seconds,
     mo,
-    size_control,
 ):
     _figure = full_field_reconstruction_figure(
-        native_field_result.estimate, int(size_control.value)
+        native_field_result.estimate,
+        int(native_detail_size.value),
+        center_row=int(native_detail_row.value),
+        center_column=int(native_detail_column.value),
     )
     _last_residual = native_field_result.data_residual[-1]
     _last_calls = native_field_result.operator_calls[-1]
@@ -1433,7 +1969,7 @@ def _(
             mo.md("## Optional native-field Huhn NLTikh reconstruction"),
             mo.callout(
                 "This phase is reconstructed on the complete measured field. The "
-                "orange inset enlarges its center using the comparison crop size; "
+                "orange box locates the enlarged region shown alongside it; "
                 "both views share one phase scale.",
                 kind="info",
             ),

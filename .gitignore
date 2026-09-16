@@ -13,3 +13,10 @@ __marimo__/session/
 # Local datasets and macOS metadata
 *.npz
 .DS_Store
+
+# Reproducible numerical checkpoints and rendered comparison figures
+.cache/
+figures/comparison/
+
+# Historical slide export; Pages now belongs to the presentation repository.
+/docs/
