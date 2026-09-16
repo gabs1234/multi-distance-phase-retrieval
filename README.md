@@ -63,6 +63,7 @@ uv run python scripts/converge-phase-retrieval.py
 uv run python scripts/converge-phase-retrieval.py --verify
 uv run python scripts/render-converged-phase-retrieval.py
 uv run python scripts/render-tie-introduction.py
+uv run python scripts/render-method-summary.py
 ```
 
 These commands write checkpoints to `.cache/phase-retrieval/converged/` and
@@ -96,6 +97,8 @@ uv run python scripts/render-converged-phase-retrieval.py \
   --cache .cache/phase-retrieval/presentation
 uv run python scripts/render-tie-introduction.py \
   --converged-cache .cache/phase-retrieval/presentation
+uv run python scripts/render-method-summary.py \
+  --cache .cache/phase-retrieval/presentation
 ```
 
 For an existing external checkpoint directory, import it once into a new path:
@@ -125,6 +128,11 @@ with the first set of commands. No reconstruction is inferred from PNG files.
   free-PGD values. Mixed CTF/nonlinear panels have separate labeled CTF bars.
   CTF uses pooled full-field 1–99% limits with saturation markers. No phase
   offsets, rescaling, or ROI-specific renormalization are applied.
+- The TL;DR figure compares regularized four-distance CTF with full Huhn-style
+  NLTikh. Both full fields and their crops share the nonlinear display range,
+  expanded if needed to include every regularized CTF value. No offsets are
+  aligned: CTF has zero mean, while NLTikh enforces nonpositive phase. The
+  0.559 versus 0.128 residual comparison uses the same four holograms.
 - The 192 × 192 ROI starts at zero-based `(row, column) = (583, 870)` and spans
   37.632 µm at 196 nm per pixel. It approximately matches the red box in Huhn
   Figure 1; the paper does not provide exact pixel coordinates. Cropping is
@@ -146,6 +154,7 @@ with the first set of commands. No reconstruction is inferred from PNG files.
   measures, not phase-accuracy scores; this experimental dataset has no phase
   ground truth. Numerical convergence does not establish a global optimum.
 
-`manifest.json`, `details-manifest.json`, `convergence-summary.json`, and
-`tie-introduction-manifest.json` accompany the figures with data/source hashes,
-original histories, stopping checks, ROI coordinates, and display limits.
+`manifest.json`, `details-manifest.json`, `convergence-summary.json`,
+`tie-introduction-manifest.json`, and `method-summary-manifest.json` accompany
+the figures with data/source hashes, original histories, stopping checks,
+ROI coordinates, and display limits.
